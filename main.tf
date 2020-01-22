@@ -2,173 +2,188 @@ terraform {
   required_version = "~> 0.12"
 }
 
-provider "aws" {
-  access_key = var.access_key
-  secret_key = var.secret_key
-  region     = var.region
+provider "azurerm" {
+  client_id = var.client_id
+  tenant_id = var.tenant_id
+  subscription_id = var.subscription_id
+  client_secret = var.client_secret
 }
 
-
-
-# Web Security Group
-resource "aws_security_group" "web_security_group" {
-  name        = "web_security_group"
-  description = "Web Sercuriy Group"
-  vpc_id      = aws_vpc.playground.id
-
-  ingress {
-    from_port   = -1
-    to_port     = -1
-    protocol    = "icmp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    protocol    = "tcp"
-    from_port   = 22
-    to_port     = 22
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    protocol    = "tcp"
-    from_port   = 443
-    to_port     = 443
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    protocol    = "tcp"
-    from_port   = 80
-    to_port     = 80
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    cidr_blocks = ["0.0.0.0/0"]
-    protocol    = "-1"
-    from_port   = 0
-    to_port     = 0
-  }
+resource "azurerm_resource_group" "my-group" {
+  name     = "my-group"
+  location = var.location
 }
-
-
-# VPC
-resource "aws_vpc" "playground" {
-  cidr_block           = var.vpc_cidr
-  instance_tenancy     = "default"
-  enable_dns_support   = "true"
-  enable_dns_hostnames = "true"
-}
-
-# Subnet
-resource "aws_subnet" "public" {
-  vpc_id            = aws_vpc.playground.id
-  count             = length(var.availability_zones)
-  cidr_block        = var.pubic_subnets_cidr[count.index]
-  availability_zone = var.availability_zones[count.index]
-  tags = {
-    Name = "${var.public_subnet_name}-${count.index}"
-  }
-}
-
-# EIP
-resource "aws_eip" "web_eip" {
-  count    = var.web_instance_count
-  instance = aws_instance.web_ec2.*.id[count.index]
-  vpc      = true
-}
-
-resource "aws_eip" "nat" {
-  vpc = true
-}
-
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.playground.id
-
-}
-
-# RouteTable
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.playground.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
-  }
-  tags = {
-    Name = "public"
-  }
-}
-
-# SubnetRouteTableAssociation
-resource "aws_route_table_association" "public" {
-  count          = length(var.pubic_subnets_cidr)
-  subnet_id      = aws_subnet.public.*.id[0]
-  route_table_id = aws_route_table.public.id
-}
-
-# NatGateway
-resource "aws_nat_gateway" "nat" {
-  count         = 1
-  subnet_id     = aws_subnet.public.*.id[0]
-  allocation_id = aws_eip.nat.id
-}
-
-resource "aws_instance" "web_ec2" {
-  ami   = var.ami
+resource "azurerm_virtual_machine" "my-compute" {
+  name = "my-vm-${count.index}"
   count = var.web_instance_count
-  tags = merge(var.tags, map(
-    "Name", "${var.web_instance_name}-${count.index}-web",
-    "TTL", "270h"
-  ))
-  instance_type = var.web_instance_type
-  vpc_security_group_ids = [
-  aws_security_group.web_security_group.id]
-  subnet_id                   = aws_subnet.public.*.id[0]
-  associate_public_ip_address = true
+  location = var.location
+  resource_group_name = azurerm_resource_group.my-group.name
+  network_interface_ids = [azurerm_network_interface.my-nw-interface.*.id[count.index]]
+  vm_size = "Standard_DS1_v2"
 
-  user_data = <<-EOF
-					  #!/bin/sh
-            sudo apt update
-            sudo apt install -y apache2
-					  sudo systemctl start apache2.service
-            EOF
+  os_profile {
+    computer_name = "my-compute"
+    admin_username = var.admin_username
+    admin_password = var.admin_password
+  }
+  os_profile_linux_config {
+    disable_password_authentication = false
+  }
+  tags = {
+    environment = "playground"
+  }
+  storage_image_reference {
+    publisher = "Canonical"
+    offer = "UbuntuServer"
+    sku = "16.04-LTS"
+    version = "latest"
+  }
+  storage_os_disk {
+    name = "my-osdisk-${count.index}"
+    caching = "ReadWrite"
+    create_option = "FromImage"
+    managed_disk_type = "Standard_LRS"
+  }
 
-}
+  provisioner "remote-exec" {
+    connection {
+      type = "ssh"
+      host = azurerm_public_ip.my-public-ip.ip_address
+      user     = var.admin_username
+      password = var.admin_password
 
-resource "aws_alb" "web_alb" {
-  name            = "web-alb"
-  internal        = false
-  subnets         = aws_subnet.public.*.id
-  security_groups = [aws_security_group.web_security_group.id]
-}
-
-resource "aws_alb_target_group" "web_tg" {
-  name     = "web-tg"
-  port     = 80
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.playground.id
-
-  health_check {
-    protocol = "HTTP"
+    }
+    inline = [
+      "sudo apt-get update",
+      "sudo apt-get install -y apache2",
+      "sudo systemctl start apache2.service"
+    ]
   }
 }
 
-resource "aws_alb_target_group_attachment" "alb_attach_tg_web" {
-  count            = var.web_instance_count
-  target_group_arn = aws_alb_target_group.web_tg.arn
-  target_id        = aws_instance.web_ec2.*.id[count.index]
-  port             = 80
+
+resource "azurerm_virtual_network" "my-vnet" {
+  name                = "my-vnet"
+  address_space       = ["10.0.0.0/16"]
+  location            = var.location
+  resource_group_name   = azurerm_resource_group.my-group.name
 }
 
-# Listener for HTTP/HTTPS
-resource "aws_alb_listener" "http_web" {
-  load_balancer_arn = aws_alb.web_alb.arn
-  port              = 80
-  protocol          = "HTTP"
+resource "azurerm_subnet" "my-subnet" {
+  name                 = "my-subnet"
+  resource_group_name   = azurerm_resource_group.my-group.name
+  virtual_network_name = azurerm_virtual_network.my-vnet.name
+  address_prefix       = "10.0.2.0/24"
+}
 
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_alb_target_group.web_tg.arn
+resource "azurerm_network_interface" "my-nw-interface" {
+  name                = "my-nw-interface-${count.index}"
+  count = var.web_instance_count
+  location            = var.location
+  resource_group_name   = azurerm_resource_group.my-group.name
+
+  ip_configuration {
+    name = "my-ip-config"
+    subnet_id = azurerm_subnet.my-subnet.id
+    private_ip_address_allocation = "Dynamic"
   }
+}
+
+resource "azurerm_network_interface_backend_address_pool_association" "my-nw-if-be-addr-pool-association" {
+  network_interface_id    = azurerm_network_interface.my-nw-interface.*.id[count.index]
+  ip_configuration_name   = "my-ip-config"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.my-lb-addr-pool.id
+  count = var.web_instance_count
+}
+
+resource "azurerm_public_ip" "my-public-ip" {
+  name                = "my-public-ip"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.my-group.name
+  allocation_method   = "Static"
+}
+
+resource "azurerm_lb" "my-lb" {
+  name                = "my-lb"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.my-group.name
+
+  frontend_ip_configuration {
+    name                 = "my-front-public-ip"
+    public_ip_address_id = azurerm_public_ip.my-public-ip.id
+  }
+}
+
+resource "azurerm_lb_backend_address_pool" "my-lb-addr-pool" {
+  resource_group_name = azurerm_resource_group.my-group.name
+  loadbalancer_id     = azurerm_lb.my-lb.id
+  name                = "my-lb-addr-pool"
+}
+
+resource "azurerm_lb_nat_rule" "ssh-nat-rule" {
+  resource_group_name            = azurerm_resource_group.my-group.name
+  loadbalancer_id                = azurerm_lb.my-lb.id
+  name                           = "ssh-nat-rule"
+  protocol                       = "Tcp"
+  frontend_port                  = 22
+  backend_port                   = 22
+  frontend_ip_configuration_name = azurerm_lb.my-lb.frontend_ip_configuration[0].name
+}
+
+resource "azurerm_lb_nat_rule" "http-nat-rule" {
+  resource_group_name            = azurerm_resource_group.my-group.name
+  loadbalancer_id                = azurerm_lb.my-lb.id
+  name                           = "http-nat-rule"
+  protocol                       = "Tcp"
+  frontend_port                  = 80
+  backend_port                   = 80
+  frontend_ip_configuration_name = azurerm_lb.my-lb.frontend_ip_configuration[0].name
+}
+
+resource "azurerm_network_interface_nat_rule_association" "ssh-nat-association" {
+  count = var.web_instance_count
+  network_interface_id  = azurerm_network_interface.my-nw-interface[count.index].id
+  ip_configuration_name = "my-ip-config"
+  nat_rule_id           = azurerm_lb_nat_rule.ssh-nat-rule.id
+}
+
+resource "azurerm_network_interface_nat_rule_association" "http-nat-association" {
+  count = var.web_instance_count
+  network_interface_id  = azurerm_network_interface.my-nw-interface[count.index].id
+  ip_configuration_name = "my-ip-config"
+  nat_rule_id           = azurerm_lb_nat_rule.http-nat-rule.id
+}
+
+resource "azurerm_network_security_group" "my-sg" {
+  name                = "my-sg"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.my-group.name
+}
+
+resource "azurerm_network_security_rule" "ssh-security-rule" {
+  name                       = "ssh"
+  priority                   = 100
+  direction                  = "Inbound"
+  access                     = "Allow"
+  protocol                   = "Tcp"
+  source_port_range          = "*"
+  destination_port_range     = "22"
+  source_address_prefix      = "*"
+  destination_address_prefix = "*"
+  network_security_group_name = azurerm_network_security_group.my-sg.name
+  resource_group_name = azurerm_resource_group.my-group.name
+}
+
+resource "azurerm_network_security_rule" "http-security-rule" {
+  name                       = "ssh"
+  priority                   = 100
+  direction                  = "Inbound"
+  access                     = "Allow"
+  protocol                   = "Tcp"
+  source_port_range          = "*"
+  destination_port_range     = "80"
+  source_address_prefix      = "*"
+  destination_address_prefix = "*"
+  network_security_group_name = azurerm_network_security_group.my-sg.name
+  resource_group_name = azurerm_resource_group.my-group.name
 }

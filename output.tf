@@ -1,3 +1,3 @@
-output "alb_dns" {
-    value = aws_alb.web_alb.dns_name
+output "lb_ip" {
+    value = azurerm_public_ip.my-public-ip.ip_address
 }
