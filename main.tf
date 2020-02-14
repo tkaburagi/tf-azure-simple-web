@@ -140,16 +140,6 @@ resource "azurerm_lb_nat_rule" "http-nat-rule" {
   frontend_ip_configuration_name = azurerm_lb.my-lb.frontend_ip_configuration[0].name
 }
 
-resource "azurerm_lb_nat_rule" "https-nat-rule" {
-  resource_group_name            = azurerm_resource_group.my-group.name
-  loadbalancer_id                = azurerm_lb.my-lb.id
-  name                           = "http-nat-rule"
-  protocol                       = "Tcp"
-  frontend_port                  = 443
-  backend_port                   = 443
-  frontend_ip_configuration_name = azurerm_lb.my-lb.frontend_ip_configuration[0].name
-}
-
 resource "azurerm_network_interface_nat_rule_association" "ssh-nat-association" {
   count = var.web_instance_count
   network_interface_id  = azurerm_network_interface.my-nw-interface[count.index].id
@@ -162,13 +152,6 @@ resource "azurerm_network_interface_nat_rule_association" "http-nat-association"
   network_interface_id  = azurerm_network_interface.my-nw-interface[count.index].id
   ip_configuration_name = "my-ip-config"
   nat_rule_id           = azurerm_lb_nat_rule.http-nat-rule.id
-}
-
-resource "azurerm_network_interface_nat_rule_association" "https-nat-association" {
-  count = var.web_instance_count
-  network_interface_id  = azurerm_network_interface.my-nw-interface[count.index].id
-  ip_configuration_name = "my-ip-config"
-  nat_rule_id           = azurerm_lb_nat_rule.https-nat-rule.id
 }
 
 resource "azurerm_network_security_group" "my-sg" {
@@ -199,20 +182,6 @@ resource "azurerm_network_security_rule" "http-security-rule" {
   protocol                   = "Tcp"
   source_port_range          = "*"
   destination_port_range     = "80"
-  source_address_prefix      = "*"
-  destination_address_prefix = "*"
-  network_security_group_name = azurerm_network_security_group.my-sg.name
-  resource_group_name = azurerm_resource_group.my-group.name
-}
-
-resource "azurerm_network_security_rule" "https-security-rule" {
-  name                       = "ssh"
-  priority                   = 100
-  direction                  = "Inbound"
-  access                     = "Allow"
-  protocol                   = "Tcp"
-  source_port_range          = "*"
-  destination_port_range     = "443"
   source_address_prefix      = "*"
   destination_address_prefix = "*"
   network_security_group_name = azurerm_network_security_group.my-sg.name
